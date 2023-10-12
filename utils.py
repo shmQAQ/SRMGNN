@@ -126,3 +126,5 @@ def Smiles2PygData(x_smiles, y):
         data_list.append(Data(x = X, edge_index = E, edge_attr = EF, y = y_tensor))
 
     return data_list
+
+def
