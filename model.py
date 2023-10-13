@@ -12,32 +12,37 @@ from typing import Any, Optional, List, Dict, Union
 from torch_geometric.nn.inits import reset
 from torch_geometric.utils import degree
 
+
 class SqaredReLu(nn.Module):
     '''fast implementation of squared relu function'''
+
     def __init__(self):
         super(SqaredReLu, self).__init__()
-    
+
     def forward(self, x):
         return torch.pow(F.relu(x), 2)
-    
+
 
 class SpatialDepthWiseConv(nn.Module):
     '''
     the spatial depthwise convolution in front of q,k,v
     '''
-    def __init__(self,d_k:int, kenerl_size:int=3):
+
+    def __init__(self, d_k: int, kenerl_size: int = 3):
         super(SpatialDepthWiseConv, self).__init__()
-        self.conv = nn.Conv1d(d_k, d_k, kenerl_size, padding=kenerl_size-1, groups=d_k)
-        
-    def forward(self,x):
-        seq_len,batch_size,heads,d_k = x.shape
-        x = x.permute(1,2,3,0)
-        x = x.view(batch_size*heads,d_k,seq_len)
+        self.conv = nn.Conv1d(d_k, d_k, kenerl_size,
+                              padding=kenerl_size-1, groups=d_k)
+
+    def forward(self, x):
+        seq_len, batch_size, heads, d_k = x.shape
+        x = x.permute(1, 2, 3, 0)
+        x = x.view(batch_size*heads, d_k, seq_len)
         x = self.conv(x)
         x = x[:, :, :-(self.kernel_size-1)]
-        x = x.view(batch_size,heads,d_k,seq_len)
-        x = x.permute(3,0,1,2)
+        x = x.view(batch_size, heads, d_k, seq_len)
+        x = x.permute(3, 0, 1, 2)
         return x
+
 
 class Attention(pyg_nn.MessagePassing):
     '''
@@ -51,8 +56,9 @@ class Attention(pyg_nn.MessagePassing):
     symmetric:bool whether to use symmetric attention
     k:number of k-hop neighbors
     '''
-    def __init__(self, embed_dim, num_heads=8, dropout=0., bias=False,
-        symmetric=False, k_hop=3, **kwargs):
+
+    def __init__(self, embed_dim, num_heads=8, dropout=0.1, bias=False,
+                 symmetric=False, k_hop=3, **kwargs):
 
         super().__init__(node_dim=0, aggr='add')
         self.embed_dim = embed_dim
@@ -62,7 +68,8 @@ class Attention(pyg_nn.MessagePassing):
 
         self.num_heads = num_heads
         self.scale = head_dim ** -0.5
-        self.khop_structure_extractor = KHopStructureExtractor(embed_dim, num_layers=k_hop, **kwargs)
+        self.khop_structure_extractor = KHopStructureExtractor(
+            embed_dim, num_layers=k_hop, **kwargs)
         self.attend = nn.Softmax(dim=-1)
 
         self.symmetric = symmetric
@@ -89,16 +96,16 @@ class Attention(pyg_nn.MessagePassing):
             nn.init.constant_(self.to_v.bias, 0.)
 
     def forward(self,
-            x,
-            edge_index,
-            complete_edge_index,
-            subgraph_node_index=None,
-            subgraph_edge_index=None,
-            subgraph_indicator_index=None,
-            subgraph_edge_attr=None,
-            edge_attr=None,
-            ptr=None,
-            return_attn=False):
+                x,
+                edge_index,
+                complete_edge_index,
+                subgraph_node_index=None,
+                subgraph_edge_index=None,
+                subgraph_indicator_index=None,
+                subgraph_edge_attr=None,
+                edge_attr=None,
+                ptr=None,
+                return_attn=False):
         """
         Compute attention layer. 
 
@@ -119,16 +126,15 @@ class Attention(pyg_nn.MessagePassing):
 
         v = self.to_v(x)
 
-        # Compute structure-aware node embeddings 
+        # Compute structure-aware node embeddings
         x_struct = self.khop_structure_extractor(
-                x=x,
-                edge_index=edge_index,
-                subgraph_edge_index=subgraph_edge_index,
-                subgraph_indicator_index=subgraph_indicator_index,
-                subgraph_node_index=subgraph_node_index,
-                subgraph_edge_attr=subgraph_edge_attr,
-            )
-
+            x=x,
+            edge_index=edge_index,
+            subgraph_edge_index=subgraph_edge_index,
+            subgraph_indicator_index=subgraph_indicator_index,
+            subgraph_node_index=subgraph_node_index,
+            subgraph_edge_attr=subgraph_edge_attr,
+        )
 
         # Compute query and key matrices
         if self.symmetric:
@@ -136,7 +142,7 @@ class Attention(pyg_nn.MessagePassing):
             qk = (qk, qk)
         else:
             qk = self.to_qk(x_struct).chunk(2, dim=-1)
-        
+
         # Compute complete self-attention
         attn = None
 
@@ -173,10 +179,11 @@ class Attention(pyg_nn.MessagePassing):
         return v_j * attn.unsqueeze(-1)
 
     def self_attn(self, qk, v, ptr, return_attn=False):
-        """ Self attention which can return the attn """ 
+        """ Self attention which can return the attn """
 
         qk, mask = pad_batch(qk, ptr, return_mask=True)
-        k, q = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.num_heads), qk)
+        k, q = map(lambda t: rearrange(
+            t, 'b n (h d) -> b h n d', h=self.num_heads), qk)
         dots = torch.matmul(q, k.transpose(-1, -2)) * self.scale
 
         dots = dots.masked_fill(
