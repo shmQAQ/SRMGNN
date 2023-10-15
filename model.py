@@ -55,10 +55,11 @@ class Attention(pyg_nn.MessagePassing):
     bias:bool whether to use bias
     symmetric:bool whether to use symmetric attention
     k:number of k-hop neighbors
+    conv:bool whether to use spatial depthwise convolution
     '''
 
     def __init__(self, embed_dim, num_heads=8, dropout=0.1, bias=False,
-                 symmetric=False, k_hop=3, **kwargs):
+                 symmetric=False, k_hop=3,conv=False, **kwargs):
 
         super().__init__(node_dim=0, aggr='add')
         self.embed_dim = embed_dim
@@ -86,6 +87,8 @@ class Attention(pyg_nn.MessagePassing):
         self._reset_parameters()
 
         self.attn_sum = None
+        if conv == True:
+            self.spatial_conv = SpatialDepthWiseConv(head_dim)
 
     def _reset_parameters(self):
         nn.init.xavier_uniform_(self.to_qk.weight)
@@ -104,6 +107,7 @@ class Attention(pyg_nn.MessagePassing):
                 subgraph_indicator_index=None,
                 subgraph_edge_attr=None,
                 edge_attr=None,
+                
                 ptr=None,
                 return_attn=False):
         """
@@ -211,23 +215,22 @@ class StructureExtractor(nn.Module):
     Args:
     ----------
     embed_dim (int):        the embeding dimension
-    gnn_type (str):         GNN type to use in structure extractor. (gcn, gin, pna, etc)
     num_layers (int):       number of GNN layers
     batch_norm (bool):      apply batch normalization or not
     concat (bool):          whether to concatenate the initial edge features
-    khopgnn (bool):         whether to use the subgraph instead of subtree
     """
 
-    def __init__(self, embed_dim, gnn_type="gcn", num_layers=3,
-                 batch_norm=True, concat=True, khopgnn=False, **kwargs):
+    def __init__(self, embed_dim, num_layers=3,
+                 batch_norm=True, concat=True, **kwargs):
         super().__init__()
         self.num_layers = num_layers
-        self.khopgnn = khopgnn
         self.concat = concat
-        self.gnn_type = gnn_type
         layers = []
         for _ in range(num_layers):
-            layers.append(get_simple_gnn_layer(gnn_type, embed_dim, **kwargs))
+            layers.append(pyg_nn.PNAConv(embed_dim, embed_dim,
+                            aggregators=['sum'], scalers= ['identity'],
+                            deg=deg, towers=8, pre_layers=1, post_layers=1,
+                            divide_input=True, edge_dim=edge_dim))
         self.gcn = nn.ModuleList(layers)
 
         self.relu = nn.ReLU()
@@ -245,13 +248,8 @@ class StructureExtractor(nn.Module):
         for gcn_layer in self.gcn:
             # if self.gnn_type == "attn":
             #     x = gcn_layer(x, edge_index, None, edge_attr=edge_attr)
-            if self.gnn_type in EDGE_GNN_TYPES:
-                if edge_attr is None:
-                    x = self.relu(gcn_layer(x, edge_index))
-                else:
-                    x = self.relu(gcn_layer(x, edge_index, edge_attr=edge_attr))
-            else:
-                x = self.relu(gcn_layer(x, edge_index))
+        
+            x = self.relu(gcn_layer(x, edge_index))
 
             if self.concat:
                 x_cat.append(x)
@@ -259,12 +257,7 @@ class StructureExtractor(nn.Module):
         if self.concat:
             x = torch.cat(x_cat, dim=-1)
 
-        if self.khopgnn:
-            if agg == "sum":
-                x = scatter_add(x, subgraph_indicator_index, dim=0)
-            elif agg == "mean":
-                x = scatter_mean(x, subgraph_indicator_index, dim=0)
-            return x
+        x = scatter_add(x, subgraph_indicator_index, dim=0)
 
         if self.num_layers > 0 and self.batch_norm:
             x = self.bn(x)
@@ -281,25 +274,19 @@ class KHopStructureExtractor(nn.Module):
     Args:
     ----------
     embed_dim (int):        the embeding dimension
-    gnn_type (str):         GNN type to use in structure extractor. (gcn, gin, pna, etc)
     num_layers (int):       number of GNN layers
     concat (bool):          whether to concatenate the initial edge features
-    khopgnn (bool):         whether to use the subgraph instead of subtree (True)
     """
-    def __init__(self, embed_dim, gnn_type="gcn", num_layers=3, batch_norm=True,
-            concat=True, khopgnn=True, **kwargs):
+    def __init__(self, embed_dim, num_layers=3, batch_norm=True,
+            concat=True,  **kwargs):
         super().__init__()
         self.num_layers = num_layers
-        self.khopgnn = khopgnn
-
         self.batch_norm = batch_norm
 
         self.structure_extractor = StructureExtractor(
             embed_dim,
-            gnn_type=gnn_type,
             num_layers=num_layers,
             concat=False,
-            khopgnn=True,
             **kwargs
         )
 
@@ -337,7 +324,7 @@ class TransformerEncoderLayer(nn.TransformerEncoderLayer):
         dim_feedforward (int): the dimension of the feedforward network model (default=512).
         dropout:            the dropout value (default=0.1).
         activation:         the activation function of the intermediate layer, can be a string
-            ("relu" or "gelu") or a unary callable (default: relu).
+            ("relu" or "squarerelu") or a unary callable (default: relu).
         batch_norm:         use batch normalization instead of layer normalization (default: True).
         pre_norm:           pre-normalization or post-normalization (default=False).
         gnn_type:           base GNN model to extract subgraph representations.
