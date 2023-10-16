@@ -87,7 +87,7 @@ class Attention(pyg_nn.MessagePassing):
         self._reset_parameters()
 
         self.attn_sum = None
-        if conv == True:
+        if conv :
             self.spatial_conv = SpatialDepthWiseConv(head_dim)
 
     def _reset_parameters(self):
@@ -107,7 +107,7 @@ class Attention(pyg_nn.MessagePassing):
                 subgraph_indicator_index=None,
                 subgraph_edge_attr=None,
                 edge_attr=None,
-                
+                conv=False,
                 ptr=None,
                 return_attn=False):
         """
@@ -143,9 +143,18 @@ class Attention(pyg_nn.MessagePassing):
         # Compute query and key matrices
         if self.symmetric:
             qk = self.to_qk(x_struct)
-            qk = (qk, qk)
+            if self.conv:
+                qk = self.spatial_conv(qk)
+                qk = (qk, qk)
+            else:
+                qk = (qk, qk)
+
         else:
-            qk = self.to_qk(x_struct).chunk(2, dim=-1)
+            if self.conv:
+                qk = self.spatial_conv(self.to_qk(x_struct))
+                qk = qk.chunk(2, dim=-1)
+            else:
+                qk = self.to_qk(x_struct).chunk(2, dim=-1)
 
         # Compute complete self-attention
         attn = None
